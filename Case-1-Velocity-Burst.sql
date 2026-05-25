@@ -1,43 +1,96 @@
--- Case 1: Velocity Detection
+-- Case 1: Velocity Burst Detection
+-- Detect accounts with multiple transactions within short intervals
+-- India BFSI context: UPI / IMPS rapid transaction behaviour
 
--- Scenario:
--- User performs multiple transactions within a short time window
+WITH txn_with_lag AS (
 
--- Logic:
--- Entity  : Customer_ID
--- Time    : Last 10 minutes
--- Measure : COUNT(transaction)
--- Rule    : COUNT >= 6
+    SELECT
+        account_id,
+        txn_id,
+        txn_amount,
+        txn_channel,
+        txn_timestamp,
 
-SELECT 
-    customerID, 
-    COUNT(*) AS txn_count_10min
-FROM aml_training_transactions
-WHERE transactionDT >= DATEADD(minute, -10, GETDATE())
-GROUP BY customerID
-HAVING COUNT(*) >= 6;
+        LAG(txn_timestamp) OVER (
+            PARTITION BY account_id
+            ORDER BY txn_timestamp
+        ) AS previous_txn_timestamp
 
--- Positive Case (Suspicious):
--- User performs multiple transactions in a short time window
--- May indicate automated activity or abnormal usage
--- Risk: 2 (Moderate)
+    FROM transactions
 
--- Negative Case (Not Fraud):
--- User performs multiple transactions from same device, location, and known beneficiary
--- Likely normal behavior (e.g., multiple bill payments)
--- Risk: 1–2 (Low–Moderate)
+),
 
--- Business Impact:
--- High transaction frequency may indicate bot-driven activity
--- Can lead to financial loss if combined with other anomalies
+velocity_flags AS (
 
--- Combination Insight:
--- If combined with new device or new location → escalates to High Risk (Level 3)
+    SELECT
+        account_id,
+        txn_id,
+        txn_amount,
+        txn_channel,
+        txn_timestamp,
 
--- Final Explanation:
--- User performed multiple transactions in a short time window
--- Indicates velocity burst and potential abnormal activity
--- Not sufficient alone to confirm fraud
+        DATEDIFF(
+            SECOND,
+            previous_txn_timestamp,
+            txn_timestamp
+        ) AS seconds_between_txns,
 
--- Risk Level: 2 (Moderate)
--- Action: Monitor and review
+        CASE
+            WHEN DATEDIFF(
+                    SECOND,
+                    previous_txn_timestamp,
+                    txn_timestamp
+                 ) < 120
+            THEN 'VELOCITY_FLAG'
+
+            ELSE 'NORMAL'
+
+        END AS alert_status
+
+    FROM txn_with_lag
+
+    WHERE previous_txn_timestamp IS NOT NULL
+
+),
+
+final_alerts AS (
+
+    SELECT
+        account_id,
+        COUNT(*) AS flagged_txn_count,
+        SUM(txn_amount) AS total_amount,
+
+        MIN(seconds_between_txns) AS minimum_gap_seconds,
+
+        CASE
+            WHEN COUNT(*) >= 5 THEN 'HIGH'
+            WHEN COUNT(*) >= 3 THEN 'MEDIUM'
+            ELSE 'LOW'
+        END AS risk_tier
+
+    FROM velocity_flags
+
+    WHERE alert_status = 'VELOCITY_FLAG'
+
+    GROUP BY account_id
+
+)
+
+SELECT *
+FROM final_alerts
+ORDER BY flagged_txn_count DESC;
+
+
+/*
+SAMPLE OUTPUT
+
+account_id | flagged_txn_count | total_amount | minimum_gap_seconds | risk_tier
+--------------------------------------------------------------------------------
+ACC1001    | 7                 | 48500        | 35                  | HIGH
+ACC2033    | 5                 | 21200        | 58                  | HIGH
+ACC4451    | 3                 | 9200         | 95                  | MEDIUM
+
+Interpretation:
+- Multiple UPI / IMPS transactions observed within short intervals.
+- Potential automated transfer or mule-account activity.
+*/
