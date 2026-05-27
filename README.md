@@ -1,4 +1,4 @@
-# Transaction Monitoring & Fraud Detection using SQL
+# Banking Transaction Anomaly Analysis using SQL
 
 SQL-driven fraud detection and transaction monitoring portfolio project inspired by real-world banking transaction patterns in BFSI environments.
 
